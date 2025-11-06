@@ -6,6 +6,8 @@ on:
   pull_request:
     branches: [ main, master ]
   workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * *'  # بناء يومي
 
 env:
   ARDUINO_CLI_VERSION: "0.35.0"
@@ -14,19 +16,29 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        board: [
+          'esp32:esp32:esp32',
+          'esp32:esp32:esp32s2',
+          'esp32:esp32:esp32s3', 
+          'esp32:esp32:esp32c3'
+        ]
     
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
       
-    - name: Set up Arduino CLI
+    - name: Setup Arduino CLI
       run: |
-        curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
-        echo "$(pwd)/bin" >> $GITHUB_PATH
+        wget -O arduino-cli.tar.gz https://downloads.arduino.cc/arduino-cli/arduino-cli_latest_Linux_64bit.tar.gz
+        tar xf arduino-cli.tar.gz
+        sudo mv arduino-cli /usr/local/bin/
+        arduino-cli version
         
     - name: Configure Arduino CLI
       run: |
-        arduino-cli config init --overwrite
+        arduino-cli config init
         arduino-cli config set library.enable_unsafe_install true
         arduino-cli core update-index --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
         
@@ -34,42 +46,60 @@ jobs:
       run: |
         arduino-cli core install esp32:esp32@${{ env.ESP32_CORE_VERSION }} --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
         
-    - name: Install dependencies
+    - name: Verify Board Support
       run: |
-        arduino-cli lib install "ESP32 BLE Arduino"
-        arduino-cli lib install "BluetoothSerial"
+        arduino-cli core list
+        arduino-cli board listall
         
-    - name: Compile for different ESP32 variants
+    - name: Compile for ${{ matrix.board }}
       run: |
-        for board in esp32:esp32:esp32 esp32:esp32:esp32s2 esp32:esp32:esp32s3 esp32:esp32:esp32c3; do
-          echo "Building for $board"
-          arduino-cli compile --fqbn $board mm.ino --build-path build/$board --build-cache-path cache/$board
-        done
+        echo "Building for ${{ matrix.board }}"
+        arduino-cli compile --fqbn ${{ matrix.board }} mm.ino --output-dir build/${{ matrix.board }} --warnings all
         
-    - name: Generate binaries
+    - name: Collect Binaries
       run: |
         mkdir -p firmware_binaries
         find build -name "*.bin" -exec cp {} firmware_binaries \;
+        find build -name "*.elf" -exec cp {} firmware_binaries \;
+        ls -la firmware_binaries/
         
-    - name: Upload binaries
+    - name: Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: esp32-bt-jammer-firmware
+        name: firmware-${{ matrix.board }}
         path: firmware_binaries/
-        retention-days: 30
-        
-    - name: Create release
-      if: startsWith(github.ref, 'refs/tags/')
+        retention-days: 90
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      
+    - name: Create Release
       uses: softprops/action-gh-release@v1
       with:
-        files: firmware_binaries/*.bin
+        files: |
+          firmware-*/mm.ino.bin
+          firmware-*/mm.ino.elf
         body: |
-          ESP32 Bluetooth Jammer Firmware
+          # ESP32 Bluetooth Jammer Firmware
           
-          Features:
-          - Powerful Bluetooth jamming
-          - Multi-device targeting
-          - Maximum transmission power
-          - Continuous frequency hopping
+          ## ⚠️ تحذير هام
+          هذا البرنامج للأغراض التعليمية والبحثية فقط.
+          استخدامه قد يكون غير قانوني في بعض البلدان.
           
-          Warning: Use responsibly and in compliance with local laws.
+          ## المميزات
+          - تشويش قوي على Bluetooth
+          - اكتشاف تلقائي للأجهزة
+          - تشويش مركز على أجهزة محددة
+          - دعم جميع أنواع ESP32
+          
+          ## الأجهزة المدعومة
+          - ESP32
+          - ESP32-S2
+          - ESP32-S3
+          - ESP32-C3
