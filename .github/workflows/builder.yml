@@ -1,0 +1,75 @@
+name: Build ESP32 Bluetooth Jammer
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+env:
+  ARDUINO_CLI_VERSION: "0.35.0"
+  ESP32_CORE_VERSION: "3.0.7"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Arduino CLI
+      run: |
+        curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
+        echo "$(pwd)/bin" >> $GITHUB_PATH
+        
+    - name: Configure Arduino CLI
+      run: |
+        arduino-cli config init --overwrite
+        arduino-cli config set library.enable_unsafe_install true
+        arduino-cli core update-index --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+        
+    - name: Install ESP32 Core
+      run: |
+        arduino-cli core install esp32:esp32@${{ env.ESP32_CORE_VERSION }} --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+        
+    - name: Install dependencies
+      run: |
+        arduino-cli lib install "ESP32 BLE Arduino"
+        arduino-cli lib install "BluetoothSerial"
+        
+    - name: Compile for different ESP32 variants
+      run: |
+        for board in esp32:esp32:esp32 esp32:esp32:esp32s2 esp32:esp32:esp32s3 esp32:esp32:esp32c3; do
+          echo "Building for $board"
+          arduino-cli compile --fqbn $board mm.ino --build-path build/$board --build-cache-path cache/$board
+        done
+        
+    - name: Generate binaries
+      run: |
+        mkdir -p firmware_binaries
+        find build -name "*.bin" -exec cp {} firmware_binaries \;
+        
+    - name: Upload binaries
+      uses: actions/upload-artifact@v4
+      with:
+        name: esp32-bt-jammer-firmware
+        path: firmware_binaries/
+        retention-days: 30
+        
+    - name: Create release
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v1
+      with:
+        files: firmware_binaries/*.bin
+        body: |
+          ESP32 Bluetooth Jammer Firmware
+          
+          Features:
+          - Powerful Bluetooth jamming
+          - Multi-device targeting
+          - Maximum transmission power
+          - Continuous frequency hopping
+          
+          Warning: Use responsibly and in compliance with local laws.
