@@ -1,4 +1,4 @@
-name: BARA ESP32 Build
+name: Build BARA Firmware
 
 on:
   push:
@@ -6,51 +6,67 @@ on:
   pull_request:
     branches: [ main ]
 
-env:
-  ARDUINO_CLI_VERSION: "0.35.0"
-  ESP32_CORE_VERSION: "2.0.14"
-
 jobs:
   build:
     runs-on: ubuntu-latest
     
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v3
       
-    - name: Setup Arduino CLI
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.x'
+        
+    - name: Install Arduino CLI
       run: |
         curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
         echo "$(pwd)/bin" >> $GITHUB_PATH
         
-    - name: Setup ESP32 Core
+    - name: Install ESP32 Board Support
       run: |
         arduino-cli config init
         arduino-cli core update-index
-        arduino-cli core install esp32:esp32@${{ env.ESP32_CORE_VERSION }}
+        arduino-cli core install esp32:esp32
         
-    - name: Install Dependencies
+    - name: Install Required Libraries
       run: |
         arduino-cli lib install "ArduinoJson"
         arduino-cli lib install "WebServer"
+        arduino-cli lib install "SPIFFS"
         
-    - name: Compile BARA Tool
+    - name: Compile BARA Firmware
       run: |
         arduino-cli compile --fqbn esp32:esp32:esp32 mm.ino --output-dir ./build
-      
-    - name: Upload Artifacts
+        
+    - name: Upload Firmware Artifacts
       uses: actions/upload-artifact@v4
       with:
         name: bara-firmware
         path: |
-          build/mm.ino.bin
-          build/mm.ino.partitions.bin
+          ./build/mm.ino.bin
+          ./build/mm.ino.partitions.bin
         retention-days: 30
         
     - name: Create Release
-      if: startsWith(github.ref, 'refs/tags/')
+      if: github.ref == 'refs/heads/main'
       uses: softprops/action-gh-release@v1
       with:
         files: |
-          build/mm.ino.bin
-          build/mm.ino.partitions.bin
+          ./build/mm.ino.bin
+          ./build/mm.ino.partitions.bin
+        body: |
+          # BARA - Ultimate Wi-Fi Pentesting Tool
+          
+          ## Firmware Files
+          - `mm.ino.bin` - Main firmware binary
+          - `mm.ino.partitions.bin` - Partition table
+          
+          ## Flash Instructions
+          1. Install ESP32 Flash Download Tool
+          2. Set correct COM port
+          3. Load both bin files with correct offsets
+          4. Flash and enjoy!
+          
+          **Warning: For educational and authorized testing only!**
