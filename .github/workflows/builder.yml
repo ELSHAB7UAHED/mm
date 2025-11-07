@@ -33,7 +33,6 @@ jobs:
     - name: Install Required Libraries
       run: |
         arduino-cli lib install "ArduinoJson"
-        arduino-cli lib install "WebServer"
         arduino-cli lib install "SPIFFS"
         
     - name: Compile BARA Firmware
