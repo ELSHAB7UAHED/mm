@@ -23,7 +23,7 @@ jobs:
         curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
         echo "$(pwd)/bin" >> $GITHUB_PATH
         
-    - name: Install ESP32 Core
+    - name: Setup ESP32 Core
       run: |
         arduino-cli config init
         arduino-cli core update-index
@@ -32,38 +32,25 @@ jobs:
     - name: Install Dependencies
       run: |
         arduino-cli lib install "ArduinoJson"
-        arduino-cli lib install "DFRobotDFPlayerMini"
+        arduino-cli lib install "WebServer"
         
-    - name: Compile for ESP32 Dev Module
+    - name: Compile BARA Tool
       run: |
-        arduino-cli compile --fqbn esp32:esp32:esp32 mm.ino --output-dir build/esp32_dev
-        
-    - name: Compile for ESP32 WROOM (using esp32 FQBN)
-      run: |
-        arduino-cli compile --fqbn esp32:esp32:esp32 mm.ino --output-dir build/esp32_wroom
-        
-    - name: Compile for ESP32 WROVER (using esp32 FQBN)
-      run: |
-        arduino-cli compile --fqbn esp32:esp32:esp32 mm.ino --output-dir build/esp32_wrover
-        
-    - name: Create Release Artifacts
-      run: |
-        mkdir -p release
-        cp build/esp32_dev/mm.ino.bin release/bara_esp32_dev.bin
-        cp build/esp32_dev/mm.ino.partitions.bin release/partitions_esp32_dev.bin
-        cp build/esp32_wroom/mm.ino.bin release/bara_esp32_wroom.bin
-        cp build/esp32_wroom/mm.ino.partitions.bin release/partitions_esp32_wroom.bin
-        cp build/esp32_wrover/mm.ino.bin release/bara_esp32_wrover.bin
-        cp build/esp32_wrover/mm.ino.partitions.bin release/partitions_esp32_wrover.bin
-        
+        arduino-cli compile --fqbn esp32:esp32:esp32 mm.ino --output-dir ./build
+      
     - name: Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
         name: bara-firmware
-        path: release/
+        path: |
+          build/mm.ino.bin
+          build/mm.ino.partitions.bin
+        retention-days: 30
         
     - name: Create Release
       if: startsWith(github.ref, 'refs/tags/')
       uses: softprops/action-gh-release@v1
       with:
-        files: release/*
+        files: |
+          build/mm.ino.bin
+          build/mm.ino.partitions.bin
