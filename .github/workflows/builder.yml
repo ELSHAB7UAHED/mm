@@ -1,45 +1,51 @@
-name: Build Bara Tool
+# builder.yml
+name: B.A.R.A WiFi Attack Platform
+version: 1.0.0
+author: Ahmed Noor Ahmed
+description: Extreme WiFi Scanning and Deauthentication Platform
+platform: esp32
+framework: arduino
 
-on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+build:
+  board: esp32dev
+  source: mm.ino
+  output: bara_platform
+  flags:
+    - -std=c++17
+    - -DCORE_DEBUG_LEVEL=3
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v3
-      
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.8'
-        
-    - name: Install PlatformIO Core
-      run: |
-        pip install -U platformio
-        
-    - name: Install Dependencies
-      run: |
-        platformio lib install "Adafruit GFX Library"
-        platformio lib install "Adafruit SSD1306"
-        platformio lib install "Adafruit BusIO"
-        platformio lib install "ESP Async WebServer"
-        platformio lib install "DNSServer"
-        platformio lib install "ESPmDNS"
-        platformio lib install "ArduinoJson"
-        platformio lib install "Audio"
-        
-    - name: Build Firmware
-      run: |
-        platformio run --environment esp32dev
-        
-    - name: Archive Artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: bara-firmware
-        path: .pio/build/esp32dev/bara.bin
+dependencies:
+  - name: WiFi
+    type: built-in
+  - name: WebServer
+    type: built-in
+  - name: DNSServer
+    type: built-in
+  - name: esp_wifi
+    type: built-in
+
+artifacts:
+  - name: bara_platform.bin
+    path: build/bara_platform.bin
+  - name: bara_platform.elf
+    path: build/bara_platform.elf
+
+scripts:
+  pre_build:
+    - echo "Initializing EXTREME POWER MODE..."
+    - echo "B.A.R.A Platform Build Sequence Started"
+  post_build:
+    - echo "Build Complete - Extreme Power Mode Activated"
+    - echo "Developer: Ahmed Noor Ahmed - Qena"
+    - echo "System Ready for Deployment"
+
+deployment:
+  platforms:
+    - esp32
+  targets:
+    - binary: bara_platform.bin
+      destination: /firmware/esp32/
+      description: Main firmware binary for ESP32
+    - binary: bara_platform.elf
+      destination: /firmware/esp32/debug/
+      description: Debug symbols for development
