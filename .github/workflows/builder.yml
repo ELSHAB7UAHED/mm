@@ -1,105 +1,45 @@
-name: Build ESP32 Bluetooth Jammer
+name: Build Bara Tool
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main ]
   pull_request:
-    branches: [ main, master ]
-  workflow_dispatch:
-  schedule:
-    - cron: '0 0 * * *'  # بناء يومي
-
-env:
-  ARDUINO_CLI_VERSION: "0.35.0"
-  ESP32_CORE_VERSION: "3.0.7"
+    branches: [ main ]
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        board: [
-          'esp32:esp32:esp32',
-          'esp32:esp32:esp32s2',
-          'esp32:esp32:esp32s3', 
-          'esp32:esp32:esp32c3'
-        ]
     
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v3
       
-    - name: Setup Arduino CLI
-      run: |
-        wget -O arduino-cli.tar.gz https://downloads.arduino.cc/arduino-cli/arduino-cli_latest_Linux_64bit.tar.gz
-        tar xf arduino-cli.tar.gz
-        sudo mv arduino-cli /usr/local/bin/
-        arduino-cli version
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.8'
         
-    - name: Configure Arduino CLI
+    - name: Install PlatformIO Core
       run: |
-        arduino-cli config init
-        arduino-cli config set library.enable_unsafe_install true
-        arduino-cli core update-index --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+        pip install -U platformio
         
-    - name: Install ESP32 Core
+    - name: Install Dependencies
       run: |
-        arduino-cli core install esp32:esp32@${{ env.ESP32_CORE_VERSION }} --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+        platformio lib install "Adafruit GFX Library"
+        platformio lib install "Adafruit SSD1306"
+        platformio lib install "Adafruit BusIO"
+        platformio lib install "ESP Async WebServer"
+        platformio lib install "DNSServer"
+        platformio lib install "ESPmDNS"
+        platformio lib install "ArduinoJson"
+        platformio lib install "Audio"
         
-    - name: Verify Board Support
+    - name: Build Firmware
       run: |
-        arduino-cli core list
-        arduino-cli board listall
+        platformio run --environment esp32dev
         
-    - name: Compile for ${{ matrix.board }}
-      run: |
-        echo "Building for ${{ matrix.board }}"
-        arduino-cli compile --fqbn ${{ matrix.board }} mm.ino --output-dir build/${{ matrix.board }} --warnings all
-        
-    - name: Collect Binaries
-      run: |
-        mkdir -p firmware_binaries
-        find build -name "*.bin" -exec cp {} firmware_binaries \;
-        find build -name "*.elf" -exec cp {} firmware_binaries \;
-        ls -la firmware_binaries/
-        
-    - name: Upload Artifacts
+    - name: Archive Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: firmware-${{ matrix.board }}
-        path: firmware_binaries/
-        retention-days: 90
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-    
-    steps:
-    - name: Download all artifacts
-      uses: actions/download-artifact@v4
-      
-    - name: Create Release
-      uses: softprops/action-gh-release@v1
-      with:
-        files: |
-          firmware-*/mm.ino.bin
-          firmware-*/mm.ino.elf
-        body: |
-          # ESP32 Bluetooth Jammer Firmware
-          
-          ## ⚠️ تحذير هام
-          هذا البرنامج للأغراض التعليمية والبحثية فقط.
-          استخدامه قد يكون غير قانوني في بعض البلدان.
-          
-          ## المميزات
-          - تشويش قوي على Bluetooth
-          - اكتشاف تلقائي للأجهزة
-          - تشويش مركز على أجهزة محددة
-          - دعم جميع أنواع ESP32
-          
-          ## الأجهزة المدعومة
-          - ESP32
-          - ESP32-S2
-          - ESP32-S3
-          - ESP32-C3
+        name: bara-firmware
+        path: .pio/build/esp32dev/bara.bin
