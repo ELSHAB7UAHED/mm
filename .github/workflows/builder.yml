@@ -38,13 +38,13 @@ jobs:
       run: |
         arduino-cli compile --fqbn esp32:esp32:esp32 mm.ino --output-dir build/esp32_dev
         
-    - name: Compile for ESP32 WROOM
+    - name: Compile for ESP32 WROOM (using esp32 FQBN)
       run: |
-        arduino-cli compile --fqbn esp32:esp32:esp32wroom mm.ino --output-dir build/esp32_wroom
+        arduino-cli compile --fqbn esp32:esp32:esp32 mm.ino --output-dir build/esp32_wroom
         
-    - name: Compile for ESP32 WROVER
+    - name: Compile for ESP32 WROVER (using esp32 FQBN)
       run: |
-        arduino-cli compile --fqbn esp32:esp32:esp32wrover mm.ino --output-dir build/esp32_wrover
+        arduino-cli compile --fqbn esp32:esp32:esp32 mm.ino --output-dir build/esp32_wrover
         
     - name: Create Release Artifacts
       run: |
